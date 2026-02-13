@@ -173,7 +173,8 @@ wss.on("connection", (twilioWs, req) => {
     }
 
     function connectGemini() {
-        const geminiUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
+        // CRITICAL: Use BiDiGenerateContent (capital D, capital I) - matches working Lexi bridge
+        const geminiUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BiDiGenerateContent?key=${GEMINI_API_KEY}`;
         geminiWs = new WebSocket(geminiUrl);
 
         geminiWs.on("open", () => {
@@ -186,26 +187,28 @@ wss.on("connection", (twilioWs, req) => {
 - After answering, suggest one logical next step.
 - Keep responses SHORT - this is a phone call.`;
 
+            // CRITICAL: speech_config at setup root level (NOT inside generation_config)
+            // This matches the working Lexi frontend setup payload exactly
             const setupPayload = {
                 setup: {
-                    model: "models/gemini-2.0-flash-live-001",
+                    model: "models/gemini-2.0-flash-exp",
                     generation_config: {
-                        response_modalities: ["AUDIO"],
-                        speech_config: {
-                            voice_config: {
-                                prebuilt_voice_config: {
-                                    voice_name: voiceName
-                                }
-                            }
-                        }
+                        response_modalities: ["audio"]
                     },
                     system_instruction: {
                         parts: [{ text: sysText }]
+                    },
+                    speech_config: {
+                        voice_config: {
+                            prebuilt_voice_config: {
+                                voice_name: voiceName
+                            }
+                        }
                     }
                 }
             };
 
-            console.log("📤 Sending Gemini setup with model: gemini-2.0-flash-live-001");
+            console.log("📤 Sending Gemini setup (model: gemini-2.0-flash-exp, voice:", voiceName, ")");
             geminiWs.send(JSON.stringify(setupPayload));
         });
 
@@ -217,6 +220,7 @@ wss.on("connection", (twilioWs, req) => {
                     console.log("✅ Gemini setup complete - LIVE");
                     isGeminiReady = true;
 
+                    // Send greeting
                     geminiWs.send(JSON.stringify({
                         client_content: {
                             turns: [{
