@@ -186,10 +186,9 @@ wss.on("connection", (twilioWs, req) => {
 - After answering, suggest one logical next step.
 - Keep responses SHORT - this is a phone call.`;
 
-            // Setup payload - NO speech_config (not supported by this model)
             const setupPayload = {
                 setup: {
-                    model: "models/gemini-2.0-flash-exp",
+                    model: "models/gemini-2.0-flash-live-001",
                     generation_config: {
                         response_modalities: ["AUDIO"],
                         speech_config: {
@@ -206,7 +205,7 @@ wss.on("connection", (twilioWs, req) => {
                 }
             };
 
-            console.log("📤 Sending Gemini setup:", JSON.stringify(setupPayload).substring(0, 200) + "...");
+            console.log("📤 Sending Gemini setup with model: gemini-2.0-flash-live-001");
             geminiWs.send(JSON.stringify(setupPayload));
         });
 
