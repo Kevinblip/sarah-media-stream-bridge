@@ -5,8 +5,8 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const BRIDGE_SECRET = process.env.SARAH_BRIDGE_SECRET || '';
 const PORT = process.env.PORT || 8080;
 
-// Gemini Live API model
-const GEMINI_MODEL = 'gemini-2.5-flash-native-audio-preview';
+// Gemini Live API model — updated Feb 2026
+const GEMINI_MODEL = 'gemini-2.5-flash-native-audio-preview-12-2025';
 const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
 
 const server = http.createServer((req, res) => {
@@ -69,7 +69,7 @@ wss.on('connection', (twilioWs, req) => {
           if (geminiWs && geminiWs.readyState === WebSocket.OPEN && setupComplete) {
             const audioData = msg.media.payload; // base64 mulaw 8kHz
 
-            // Send raw audio to Gemini - it handles mulaw natively
+            // Send raw audio to Gemini
             const realtimeInput = {
               realtimeInput: {
                 mediaChunks: [{
