@@ -6,7 +6,7 @@ const BRIDGE_SECRET = process.env.SARAH_BRIDGE_SECRET || '';
 const PORT = process.env.PORT || 8080;
 
 // Gemini Live API model
-const GEMINI_MODEL = 'gemini-2.0-flash-live-001';
+const GEMINI_MODEL = 'gemini-2.5-flash-native-audio-preview';
 const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
 
 const server = http.createServer((req, res) => {
