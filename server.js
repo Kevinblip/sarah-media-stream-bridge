@@ -89,3 +89,173 @@ wss.on("connection", (twilioWs, req) => {
     const url = new URL(req.url, `http://localhost:${PORT}`);
     const secret = url.searchParams.get("secret");
     const companyName = decodeURIComponent(url.searchParams.get("companyName") || "CompanySync");
+    const systemPrompt = decodeURIComponent(url.searchParams.get("systemPrompt") || "");
+    const voiceName = url.searchParams.get("voice") || "Kore";
+
+    // Auth check
+    if (BRIDGE_SECRET && secret !== BRIDGE_SECRET) {
+        console.error("❌ Invalid secret");
+        twilioWs.close(1008, "Unauthorized");
+        return;
+    }
+
+    console.log(`📞 New call | company=${companyName} voice=${voiceName}`);
+
+    let geminiWs = null;
+    let streamSid = null;
+    let isGeminiReady = false;
+    let audioBuffer = "";
+    let bufferTimeout = null;
+    const BUFFER_MS = 100;
+
+    twilioWs.on("message", (raw) => {
+        try {
+            const msg = JSON.parse(raw);
+
+            switch (msg.event) {
+                case "connected":
+                    console.log("📞 Twilio connected");
+                    break;
+
+                case "start":
+                    streamSid = msg.start.streamSid;
+                    console.log(`📞 Stream started: ${streamSid}`);
+                    connectGemini();
+                    break;
+
+                case "media":
+                    if (!isGeminiReady || !geminiWs || geminiWs.readyState !== WebSocket.OPEN) break;
+
+                    audioBuffer += msg.media.payload;
+                    if (!bufferTimeout) {
+                        bufferTimeout = setTimeout(() => {
+                            if (audioBuffer && geminiWs?.readyState === WebSocket.OPEN) {
+                                const pcm = mulawToPcm16k(audioBuffer);
+                                geminiWs.send(JSON.stringify({
+                                    realtime_input: {
+                                        media_chunks: [{ mime_type: "audio/pcm;rate=16000", data: pcm }]
+                                    }
+                                }));
+                            }
+                            audioBuffer = "";
+                            bufferTimeout = null;
+                        }, BUFFER_MS);
+                    }
+                    break;
+
+                case "stop":
+                    console.log("📞 Stream stopped");
+                    cleanup();
+                    break;
+            }
+        } catch (e) {
+            console.error("❌ Parse error:", e.message);
+        }
+    });
+
+    twilioWs.on("close", () => {
+        console.log("📞 Twilio disconnected");
+        cleanup();
+    });
+
+    twilioWs.on("error", (e) => console.error("❌ Twilio error:", e.message));
+
+    function cleanup() {
+        if (bufferTimeout) clearTimeout(bufferTimeout);
+        if (geminiWs) { geminiWs.close(); geminiWs = null; }
+        isGeminiReady = false;
+    }
+
+    function connectGemini() {
+        const geminiUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
+        geminiWs = new WebSocket(geminiUrl);
+
+        geminiWs.on("open", () => {
+            console.log("✅ Gemini connected");
+
+            let sysText = systemPrompt || `You are Sarah, a friendly and professional receptionist for ${companyName}.`;
+            sysText += `\n\nRULES (VOICE CALL):
+- Answer directly in 2-3 sentences max. Be natural and warm.
+- Never say you're an AI. You are Sarah, a real person.
+- After answering, suggest one logical next step.
+- Keep responses SHORT - this is a phone call.`;
+
+            geminiWs.send(JSON.stringify({
+                setup: {
+                    model: "models/gemini-2.0-flash-exp",
+                    generation_config: { response_modalities: ["audio"] },
+                    system_instruction: { parts: [{ text: sysText }] },
+                    speech_config: {
+                        voice_config: {
+                            prebuilt_voice_config: { voice_name: voiceName }
+                        }
+                    }
+                }
+            }));
+        });
+
+        geminiWs.on("message", (raw) => {
+            try {
+                const data = JSON.parse(raw);
+
+                if (data.setupComplete) {
+                    console.log("✅ Gemini setup complete - LIVE");
+                    isGeminiReady = true;
+
+                    // Send greeting prompt
+                    geminiWs.send(JSON.stringify({
+                        client_content: {
+                            turns: [{
+                                role: "user",
+                                parts: [{ text: `Say exactly this in a warm, friendly tone: "Hi! This is Sarah from ${companyName}. How can I help you today?"` }]
+                            }],
+                            turn_complete: true
+                        }
+                    }));
+                    return;
+                }
+
+                // Audio from Gemini → send to Twilio
+                if (data.serverContent?.modelTurn?.parts) {
+                    for (const part of data.serverContent.modelTurn.parts) {
+                        if (part.inlineData?.mimeType?.startsWith("audio/")) {
+                            const mulaw = pcm24kToMulaw8k(part.inlineData.data);
+                            if (twilioWs.readyState === WebSocket.OPEN && streamSid) {
+                                twilioWs.send(JSON.stringify({
+                                    event: "media",
+                                    streamSid,
+                                    media: { payload: mulaw }
+                                }));
+                            }
+                        }
+                        if (part.text) {
+                            console.log(`💬 Sarah: ${part.text.substring(0, 80)}`);
+                        }
+                    }
+                }
+
+                if (data.serverContent?.userTurn?.parts) {
+                    for (const part of data.serverContent.userTurn.parts) {
+                        if (part.text) console.log(`🎤 Caller: "${part.text}"`);
+                    }
+                }
+            } catch (e) {
+                console.error("❌ Gemini parse error:", e.message);
+            }
+        });
+
+        geminiWs.on("close", (code, reason) => {
+            console.log(`❌ Gemini closed: ${code} ${reason}`);
+            isGeminiReady = false;
+        });
+
+        geminiWs.on("error", (e) => {
+            console.error("❌ Gemini error:", e.message);
+            isGeminiReady = false;
+        });
+    }
+});
+
+server.listen(PORT, () => {
+    console.log(`🚀 Sarah Media Stream Bridge running on port ${PORT}`);
+});
