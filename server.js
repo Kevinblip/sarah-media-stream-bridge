@@ -111,7 +111,6 @@ wss.on("connection", (twilioWs, req) => {
 
                 case "start":
                     streamSid = msg.start.streamSid;
-
                     const params = msg.start.customParameters || {};
                     const secret = params.secret || "";
                     companyName = params.companyName || "CompanySync";
@@ -173,7 +172,6 @@ wss.on("connection", (twilioWs, req) => {
     }
 
     function connectGemini() {
-        // CRITICAL: Use BiDiGenerateContent (capital D, capital I) - matches working Lexi bridge
         const geminiUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BiDiGenerateContent?key=${GEMINI_API_KEY}`;
         geminiWs = new WebSocket(geminiUrl);
 
@@ -181,34 +179,17 @@ wss.on("connection", (twilioWs, req) => {
             console.log("✅ Gemini connected");
 
             let sysText = systemPrompt || `You are Sarah, a friendly and professional receptionist for ${companyName}.`;
-            sysText += `\n\nRULES (VOICE CALL):
-- Answer directly in 2-3 sentences max. Be natural and warm.
-- Never say you're an AI. You are Sarah, a real person.
-- After answering, suggest one logical next step.
-- Keep responses SHORT - this is a phone call.`;
+            sysText += `\n\nRULES (VOICE CALL): - Answer directly in 2-3 sentences max. Be natural and warm. - Never say you're an AI. You are Sarah, a real person. - After answering, suggest one logical next step. - Keep responses SHORT - this is a phone call.`;
 
-            // CRITICAL: speech_config at setup root level (NOT inside generation_config)
-            // This matches the working Lexi frontend setup payload exactly
             const setupPayload = {
                 setup: {
                     model: "models/gemini-2.0-flash-exp",
-                    generation_config: {
-                        response_modalities: ["audio"]
-                    },
-                    system_instruction: {
-                        parts: [{ text: sysText }]
-                    },
-                    speech_config: {
-                        voice_config: {
-                            prebuilt_voice_config: {
-                                voice_name: voiceName
-                            }
-                        }
-                    }
+                    generation_config: { response_modalities: ["audio"] },
+                    system_instruction: { parts: [{ text: sysText }] }
                 }
             };
 
-            console.log("📤 Sending Gemini setup (model: gemini-2.0-flash-exp, voice:", voiceName, ")");
+            console.log("📤 Sending Gemini setup...");
             geminiWs.send(JSON.stringify(setupPayload));
         });
 
@@ -219,8 +200,7 @@ wss.on("connection", (twilioWs, req) => {
                 if (data.setupComplete) {
                     console.log("✅ Gemini setup complete - LIVE");
                     isGeminiReady = true;
-
-                    // Send greeting
+                    // Greeting
                     geminiWs.send(JSON.stringify({
                         client_content: {
                             turns: [{
@@ -238,22 +218,10 @@ wss.on("connection", (twilioWs, req) => {
                         if (part.inlineData?.mimeType?.startsWith("audio/")) {
                             const mulaw = pcm24kToMulaw8k(part.inlineData.data);
                             if (twilioWs.readyState === WebSocket.OPEN && streamSid) {
-                                twilioWs.send(JSON.stringify({
-                                    event: "media",
-                                    streamSid,
-                                    media: { payload: mulaw }
-                                }));
+                                twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: mulaw } }));
                             }
                         }
-                        if (part.text) {
-                            console.log(`💬 Sarah: ${part.text.substring(0, 80)}`);
-                        }
-                    }
-                }
-
-                if (data.serverContent?.userTurn?.parts) {
-                    for (const part of data.serverContent.userTurn.parts) {
-                        if (part.text) console.log(`🎤 Caller: "${part.text}"`);
+                        if (part.text) console.log(`💬 Sarah: ${part.text.substring(0, 80)}`);
                     }
                 }
             } catch (e) {
