@@ -86,7 +86,6 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ server });
 
 wss.on("connection", (twilioWs, req) => {
-    // Parameters come from Twilio's "start" event, NOT from URL query params
     let companyName = "CompanySync";
     let systemPrompt = "";
     let voiceName = "Kore";
@@ -113,14 +112,12 @@ wss.on("connection", (twilioWs, req) => {
                 case "start":
                     streamSid = msg.start.streamSid;
 
-                    // Twilio sends <Parameter> values inside customParameters
                     const params = msg.start.customParameters || {};
                     const secret = params.secret || "";
                     companyName = params.companyName || "CompanySync";
                     systemPrompt = params.systemPrompt || "";
                     voiceName = params.voice || "Kore";
 
-                    // Auth check
                     if (BRIDGE_SECRET && secret !== BRIDGE_SECRET) {
                         console.error("❌ Invalid secret. Received:", secret ? secret.substring(0, 4) + "..." : "(empty)");
                         twilioWs.close(1008, "Unauthorized");
@@ -189,18 +186,28 @@ wss.on("connection", (twilioWs, req) => {
 - After answering, suggest one logical next step.
 - Keep responses SHORT - this is a phone call.`;
 
-            geminiWs.send(JSON.stringify({
+            // Setup payload - NO speech_config (not supported by this model)
+            const setupPayload = {
                 setup: {
                     model: "models/gemini-2.0-flash-exp",
-                    generation_config: { response_modalities: ["audio"] },
-                    system_instruction: { parts: [{ text: sysText }] },
-                    speech_config: {
-                        voice_config: {
-                            prebuilt_voice_config: { voice_name: voiceName }
+                    generation_config: {
+                        response_modalities: ["AUDIO"],
+                        speech_config: {
+                            voice_config: {
+                                prebuilt_voice_config: {
+                                    voice_name: voiceName
+                                }
+                            }
                         }
+                    },
+                    system_instruction: {
+                        parts: [{ text: sysText }]
                     }
                 }
-            }));
+            };
+
+            console.log("📤 Sending Gemini setup:", JSON.stringify(setupPayload).substring(0, 200) + "...");
+            geminiWs.send(JSON.stringify(setupPayload));
         });
 
         geminiWs.on("message", (raw) => {
@@ -211,7 +218,6 @@ wss.on("connection", (twilioWs, req) => {
                     console.log("✅ Gemini setup complete - LIVE");
                     isGeminiReady = true;
 
-                    // Send greeting prompt
                     geminiWs.send(JSON.stringify({
                         client_content: {
                             turns: [{
@@ -224,7 +230,6 @@ wss.on("connection", (twilioWs, req) => {
                     return;
                 }
 
-                // Audio from Gemini → send to Twilio
                 if (data.serverContent?.modelTurn?.parts) {
                     for (const part of data.serverContent.modelTurn.parts) {
                         if (part.inlineData?.mimeType?.startsWith("audio/")) {
