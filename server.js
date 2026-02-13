@@ -86,20 +86,13 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ server });
 
 wss.on("connection", (twilioWs, req) => {
-    const url = new URL(req.url, `http://localhost:${PORT}`);
-    const secret = url.searchParams.get("secret");
-    const companyName = decodeURIComponent(url.searchParams.get("companyName") || "CompanySync");
-    const systemPrompt = decodeURIComponent(url.searchParams.get("systemPrompt") || "");
-    const voiceName = url.searchParams.get("voice") || "Kore";
+    // Parameters come from Twilio's "start" event, NOT from URL query params
+    let companyName = "CompanySync";
+    let systemPrompt = "";
+    let voiceName = "Kore";
+    let authenticated = false;
 
-    // Auth check
-    if (BRIDGE_SECRET && secret !== BRIDGE_SECRET) {
-        console.error("❌ Invalid secret");
-        twilioWs.close(1008, "Unauthorized");
-        return;
-    }
-
-    console.log(`📞 New call | company=${companyName} voice=${voiceName}`);
+    console.log("📞 New WebSocket connection (waiting for start event...)");
 
     let geminiWs = null;
     let streamSid = null;
@@ -119,12 +112,28 @@ wss.on("connection", (twilioWs, req) => {
 
                 case "start":
                     streamSid = msg.start.streamSid;
-                    console.log(`📞 Stream started: ${streamSid}`);
+
+                    // Twilio sends <Parameter> values inside customParameters
+                    const params = msg.start.customParameters || {};
+                    const secret = params.secret || "";
+                    companyName = params.companyName || "CompanySync";
+                    systemPrompt = params.systemPrompt || "";
+                    voiceName = params.voice || "Kore";
+
+                    // Auth check
+                    if (BRIDGE_SECRET && secret !== BRIDGE_SECRET) {
+                        console.error("❌ Invalid secret. Received:", secret ? secret.substring(0, 4) + "..." : "(empty)");
+                        twilioWs.close(1008, "Unauthorized");
+                        return;
+                    }
+                    authenticated = true;
+
+                    console.log(`✅ Authenticated | Stream: ${streamSid} | company=${companyName} | voice=${voiceName}`);
                     connectGemini();
                     break;
 
                 case "media":
-                    if (!isGeminiReady || !geminiWs || geminiWs.readyState !== WebSocket.OPEN) break;
+                    if (!authenticated || !isGeminiReady || !geminiWs || geminiWs.readyState !== WebSocket.OPEN) break;
 
                     audioBuffer += msg.media.payload;
                     if (!bufferTimeout) {
