@@ -2,13 +2,15 @@ const http = require("http");
 const { WebSocketServer, WebSocket } = require("ws");
 const PORT = process.env.PORT || 8080;
 const GEMINI_API_KEY = process.env.GOOGLE_GEMINI_API_KEY;
-const BASE44_APP_ID = process.env.BASE44_APP_ID;
-const BASE44_SERVICE_ROLE_KEY = process.env.BASE44_SERVICE_ROLE_KEY;
+const BASE44_API_URL = process.env.BASE44_API_URL;
+const SARAH_BRIDGE_SECRET = process.env.SARAH_BRIDGE_SECRET;
 if (!GEMINI_API_KEY) {
   console.error("FATAL: GOOGLE_GEMINI_API_KEY is required");
   process.exit(1);
 }
-if (!BASE44_APP_ID || !BASE44_SERVICE_ROLE_KEY) {
+if (!BASE44_API_URL) {
+  console.warn("WARNING: BASE44_API_URL missing. Tool calls to Base44 will fail.");
+}
   console.warn("WARNING: BASE44_APP_ID or BASE44_SERVICE_ROLE_KEY missing. Tool calls to Base44 will fail.");
 }
 const VOICE_MAP = {
