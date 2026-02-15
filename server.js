@@ -175,8 +175,8 @@ async function callBase44(action, companyId, data) {
   }
 }
 
-function buildSystemInstruction(settings, companyName, scenario, knowledgeBase, audioContext, interimContext) {
-  const agentName = "Sarah";
+function buildSystemInstruction(settings, companyName, scenario, knowledgeBase, audioContext, interimContext, agentName) {
+  agentName = agentName || "Sarah";
   const basePrompt =
     settings.system_prompt ||
     `You are ${agentName}, a friendly receptionist for ${companyName}.`;
@@ -184,13 +184,13 @@ function buildSystemInstruction(settings, companyName, scenario, knowledgeBase, 
   if (scenario === "saas_demo") {
     return `
 IDENTITY & ROLE:
-You are Sarah, the Lead Sales Representative for CompanySync.io.
+You are ${agentName}, the Lead Sales Representative for CompanySync.io.
 CompanySync is the "Roof Operating System" - the all-in-one CRM built specifically for roofing contractors.
 Your goal is to GET THE ROOFER TO SUBSCRIBE or BOOK A DEMO.
 
 VALUE PROPOSITION:
 - All-in-One: Replaces JobNimbus, Acculynx, and ServiceTitan for just $99/month (flat rate).
-- AI-Powered: Comes with "Lexi" (AI text assistant) and "Sarah" (YOU - the AI voice receptionist).
+- AI-Powered: Comes with an AI text assistant and "${agentName}" (YOU - the AI voice receptionist).
 - Speed: Sets up in 5 minutes. No 4-week onboarding.
 - Features: AI Estimating, Storm Tracking, Mobile App, Automations, Payments.
 
@@ -207,7 +207,7 @@ CONVERSATION FLOW:
    - OR "Do you want to book a quick 15-minute demo?"
 
 OBJECTION HANDLING:
-- Is this AI?: "Yes! I am Sarah, the AI receptionist that comes BUILT-IN with CompanySync."
+- Is this AI?: "Yes! I am ${agentName}, the AI receptionist that comes BUILT-IN with CompanySync."
 - Price?: "It's $99/month flat. Unlimited users. No hidden fees."
 
 SPECIFIC KNOWLEDGE BASE:
@@ -226,7 +226,7 @@ ${interimContext}
   return `
 IDENTITY & ROLE:
 ${basePrompt}
-You are "Sarah", the Senior Office Manager and Intake Specialist for ${companyName}, a premier roofing contractor.
+You are "${agentName}", the Senior Office Manager and Intake Specialist for ${companyName}, a premier roofing contractor.
 You are NOT a generic AI. You are a roofing industry expert.
 Your goal is to BOOK THE FREE INSPECTION.
 
@@ -240,7 +240,7 @@ SPECIFIC KNOWLEDGE BASE:
 ${knowledgeBase || "No specific knowledge base provided."}
 
 CONVERSATION FLOW:
-1. GREETING: "Thanks for calling ${companyName}, this is Sarah. How can I help you with your property today?"
+1. GREETING: "Thanks for calling ${companyName}, this is ${agentName}. How can I help you with your property today?"
 2. DISCOVERY: Assess their situation (leak, quote, inspection).
 3. QUALIFICATION: Get property address and name.
 4. CLOSE: Book the inspection using check_availability and book_appointment tools.
@@ -260,7 +260,22 @@ ${interimContext}
 `;
 }
 
-const server = http.createServer((req, res) => {
+function parseFormBody(req) {
+  return new Promise((resolve) => {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      const params = {};
+      body.split("&").forEach((pair) => {
+        const [k, v] = pair.split("=");
+        if (k) params[decodeURIComponent(k)] = decodeURIComponent(v || "");
+      });
+      resolve(params);
+    });
+  });
+}
+
+const server = http.createServer(async (req, res) => {
   if (req.url === "/health" || req.url === "/") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
@@ -271,6 +286,55 @@ const server = http.createServer((req, res) => {
         gemini_configured: !!GEMINI_API_KEY,
       })
     );
+    return;
+  }
+
+  if (req.url === "/twiml/voice" && req.method === "POST") {
+    const formData = await parseFormBody(req);
+    const calledNumber = (formData.Called || formData.To || "").replace(/\D/g, "");
+    const callerNumber = formData.From || "";
+
+    console.log(`[TWIML] Incoming call to ${calledNumber} from ${callerNumber}`);
+
+    let companyId = "";
+    let scenario = "";
+
+    if (calledNumber && BASE44_API_URL) {
+      try {
+        const lookup = await callBase44("lookupByPhone", null, { phone_number: calledNumber });
+        if (lookup.success && lookup.company_id) {
+          companyId = lookup.company_id;
+          console.log(`[TWIML] Resolved company: ${companyId} for number ${calledNumber}`);
+        } else {
+          console.warn(`[TWIML] No company found for ${calledNumber}`);
+        }
+      } catch (e) {
+        console.error(`[TWIML] Lookup failed:`, e.message);
+      }
+    }
+
+    if (!companyId) {
+      companyId = "695944e3c1fb00b7ab716c6f";
+      scenario = "saas_demo";
+      console.log(`[TWIML] Defaulting to CompanySync demo`);
+    }
+
+    const wsHost = process.env.RAILWAY_WS_HOST || "sarah-media-stream-bridge-production.up.railway.app";
+    const wsUrl = `wss://${wsHost}/ws/twilio?companyId=${companyId}&scenario=${scenario}`;
+
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Connect>
+        <Stream url="${wsUrl}">
+            <Parameter name="companyId" value="${companyId}" />
+            <Parameter name="callerNumber" value="${callerNumber}" />
+        </Stream>
+    </Connect>
+</Response>`;
+
+    res.writeHead(200, { "Content-Type": "text/xml" });
+    res.end(twiml);
+    console.log(`[TWIML] Served TwiML for company ${companyId}, WS: ${wsUrl}`);
     return;
   }
 
@@ -288,6 +352,39 @@ wss.on("connection", async (twilioWs, req) => {
 
   let geminiWs = null;
   let streamSid = null;
+  let callStartTime = Date.now();
+  let conversationLog = [];
+  let toolCallsMade = [];
+  let collectedCallerName = null;
+  let callerPhone = null;
+  let callSid = null;
+  let callLogSaved = false;
+  let assistantName = "Sarah";
+
+  async function saveCallToBase44() {
+    if (callLogSaved || !companyId) return;
+    callLogSaved = true;
+
+    const durationSec = Math.round((Date.now() - callStartTime) / 1000);
+    const transcript = conversationLog.map(e => `${e.role}: ${e.text}`).join('\n');
+
+    console.log(`[CALL] Saving call log: ${durationSec}s, ${conversationLog.length} exchanges, ${toolCallsMade.length} tool calls`);
+
+    try {
+      await callBase44('saveCallLog', companyId, {
+        caller_phone: callerPhone || 'Unknown',
+        caller_name: collectedCallerName || 'Voice Caller',
+        duration_seconds: durationSec,
+        transcript: transcript,
+        call_sid: callSid || '',
+        tool_calls_made: toolCallsMade,
+        assistant_name: assistantName,
+      });
+      console.log('[CALL] Call log saved to CRM successfully');
+    } catch (err) {
+      console.error('[CALL] Failed to save call log:', err.message);
+    }
+  }
 
   try {
     let settings = {};
@@ -299,6 +396,9 @@ wss.on("connection", async (twilioWs, req) => {
         if (result && !result.error) {
           settings = result.settings || {};
           companyName = result.companyName || "our company";
+          if (result.assistantName) {
+            assistantName = result.assistantName;
+          }
         }
       } catch (e) {
         console.error("[CALL] Failed to load settings:", e.message);
@@ -341,14 +441,15 @@ wss.on("connection", async (twilioWs, req) => {
       scenario,
       knowledgeBase,
       audioContext,
-      interimContext
+      interimContext,
+      assistantName
     );
 
     const selectedVoice =
       VOICE_MAP[settings.voice_id || settings.gemini_voice || ""] ||
       VOICE_MAP["default"];
 
-    console.log(`[CALL] Voice: ${selectedVoice}, Company: ${companyName}`);
+    console.log(`[CALL] Voice: ${selectedVoice}, Company: ${companyName}, Assistant: ${assistantName}`);
 
     const geminiUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
 
@@ -440,8 +541,15 @@ wss.on("connection", async (twilioWs, req) => {
       try {
         const data = JSON.parse(rawData.toString());
 
+        if (data.serverContent?.inputTranscript) {
+          conversationLog.push({ role: 'Caller', text: data.serverContent.inputTranscript });
+        }
+
         if (data.serverContent?.modelTurn?.parts) {
           for (const part of data.serverContent.modelTurn.parts) {
+            if (part.text) {
+              conversationLog.push({ role: assistantName, text: part.text });
+            }
             if (
               part.inlineData &&
               part.inlineData.mimeType.startsWith("audio/")
@@ -488,6 +596,14 @@ wss.on("connection", async (twilioWs, req) => {
 
           for (const call of data.toolCall.functionCalls) {
             let result = {};
+            toolCallsMade.push(call.name);
+            conversationLog.push({ role: 'Tool', text: `${call.name}(${JSON.stringify(call.args || {})})` });
+
+            if (call.name === 'save_lead_details' && call.args) {
+              if (call.args.name) collectedCallerName = call.args.name;
+              if (call.args.phone) callerPhone = call.args.phone;
+            }
+
             try {
               if (call.name === "check_availability") {
                 result = await callBase44(
@@ -529,7 +645,10 @@ wss.on("connection", async (twilioWs, req) => {
       }
     });
 
-    geminiWs.on("close", () => console.log("[GEMINI] Disconnected"));
+    geminiWs.on("close", () => {
+      console.log("[GEMINI] Disconnected");
+      saveCallToBase44();
+    });
     geminiWs.on("error", (err) =>
       console.error("[GEMINI] Error:", err.message)
     );
@@ -546,6 +665,11 @@ wss.on("connection", async (twilioWs, req) => {
       if (msg.event === "start") {
         console.log("[TWILIO] Stream started:", msg.start.streamSid);
         streamSid = msg.start.streamSid;
+        callStartTime = Date.now();
+        callSid = msg.start.callSid || null;
+        const customParams = msg.start.customParameters || {};
+        if (customParams.callerNumber) callerPhone = customParams.callerNumber;
+        if (customParams.callerPhone) callerPhone = customParams.callerPhone;
       }
 
       if (msg.event === "media" && geminiWs?.readyState === WebSocket.OPEN) {
@@ -575,6 +699,7 @@ wss.on("connection", async (twilioWs, req) => {
 
   twilioWs.on("close", () => {
     console.log("[TWILIO] Connection closed");
+    saveCallToBase44();
     geminiWs?.close();
   });
 });
